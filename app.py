@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from src.visualizations import draw_choropleth_map, draw_sankey_diagram
+from src.visualizations import draw_choropleth_map, draw_sankey_diagram, draw_tag_network
 
 # Page configuration
 st.set_page_config(
@@ -126,6 +126,21 @@ elif active_tab == tab_options[2]:
                 """
                 - **Insight:** Traces how content categories branch into trending velocity (fast vs. slow) and ultimately lead to high or standard viewer engagement.
                 - **Interactivity:** Hover over nodes and links to inspect exact video flow counts and percentage distributions dynamically driven by sidebar filters.
+                """
+            )
+        st.divider()
+
+        # 3. Tag Co-occurrence Network
+        st.subheader("Semantic Tag Relationship Network")
+        fig_network = draw_tag_network(filtered_df)
+        st.plotly_chart(fig_network, use_container_width=True)
+
+        with st.expander("📌 Network Graph Insights & Technical Notes"):
+            st.markdown(
+                """
+                - **Insight:** Uncovers clusters of tags that frequently appear together on trending videos, revealing algorithmic metadata patterns.
+                - **Interactivity:** Densely connected hub tags are sized and colored by network degree. Hover reveals co-occurrence strength.
+                - **Layout Algorithm:** NetworkX Spring layout (Fruchterman-Reingold force-directed placement).
                 """
             )
     else:
