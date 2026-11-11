@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from src.visualizations import draw_choropleth_map
+from src.visualizations import draw_choropleth_map, draw_sankey_diagram
 
 # Page configuration
 st.set_page_config(
@@ -112,6 +112,20 @@ elif active_tab == tab_options[2]:
                 - **Insight:** Compares average engagement and view volumes across trending videos per target country.
                 - **Interactivity:** Supports hover tooltips with formatted metrics, continuous zoom, and dynamic recalculation via sidebar filters.
                 - **Projection:** Natural Earth projection with standardized oceanic and continental basemap styling.
+                """
+            )
+        st.divider()
+        
+        # 2. Sankey Diagram
+        st.subheader("Categorical Flow: Velocity to Engagement")
+        fig_sankey = draw_sankey_diagram(filtered_df)
+        st.plotly_chart(fig_sankey, use_container_width=True)
+        
+        with st.expander("📌 Sankey Flow Insights & Technical Notes"):
+            st.markdown(
+                """
+                - **Insight:** Traces how content categories branch into trending velocity (fast vs. slow) and ultimately lead to high or standard viewer engagement.
+                - **Interactivity:** Hover over nodes and links to inspect exact video flow counts and percentage distributions dynamically driven by sidebar filters.
                 """
             )
     else:

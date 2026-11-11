@@ -70,5 +70,82 @@ def draw_choropleth_map(df: pd.DataFrame):
         margin=dict(l=10, r=10, t=50, b=10),
         font=dict(family="sans-serif", size=12)
     )
+
+    return fig
+
+import plotly.graph_objects as go
+
+def draw_sankey_diagram(df: pd.DataFrame):
+    # Segment data into analytical tiers
+    temp_df = df.copy()
+    
+    # 1. Trending Speed Segmentation
+    temp_df["trend_speed"] = temp_df["days_to_trend"].apply(
+        lambda x: "Fast Trend (<3d)" if x <= 2 else "Slow Trend (3d+)"
+    )
+    
+    # 2. Engagement Rate Segmentation (Likes per View)
+    engagement_rate = temp_df["likes"] / (temp_df["views"] + 1)
+    median_engagement = engagement_rate.median()
+    temp_df["engagement_level"] = engagement_rate.apply(
+        lambda x: "High Engagement" if x >= median_engagement else "Standard Engagement"
+    )
+    
+    # Flow 1: Category -> Trending Speed
+    flow1 = temp_df.groupby(["category", "trend_speed"]).size().reset_index(name="count")
+    flow1.columns = ["source_label", "target_label", "count"]
+    
+    # Flow 2: Trending Speed -> Engagement Level
+    flow2 = temp_df.groupby(["trend_speed", "engagement_level"]).size().reset_index(name="count")
+    flow2.columns = ["source_label", "target_label", "count"]
+    
+    flows = pd.concat([flow1, flow2], ignore_index=True)
+    
+    # Unique nodes mapping
+    all_nodes = list(pd.unique(flows[["source_label", "target_label"]].values.ravel("K")))
+    node_to_idx = {name: idx for idx, name in enumerate(all_nodes)}
+    
+    sources = [node_to_idx[s] for s in flows["source_label"]]
+    targets = [node_to_idx[t] for t in flows["target_label"]]
+    values = flows["count"].tolist()
+    
+    # Node colors
+    node_colors = []
+    for node in all_nodes:
+        if "Engagement" in node:
+            node_colors.append("#22c55e" if "High" in node else "#94a3b8")
+        elif "Trend" in node:
+            node_colors.append("#38bdf8" if "Fast" in node else "#f59e0b")
+        else:
+            node_colors.append("#ef4444")
+            
+    # Build Sankey Figure
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                node=dict(
+                    pad=18,
+                    thickness=16,
+                    line=dict(color="#0f172a", width=0.5),
+                    label=all_nodes,
+                    color=node_colors
+                ),
+                link=dict(
+                    source=sources,
+                    target=targets,
+                    value=values,
+                    color="rgba(148, 163, 184, 0.22)"
+                )
+            )
+        ]
+    )
+    
+    fig.update_layout(
+        title="Content Velocity & Audience Engagement Flow",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=50, b=10),
+        font=dict(family="sans-serif", size=12, color="#e2e8f0")
+    )
     
     return fig
