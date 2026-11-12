@@ -70,7 +70,7 @@ def remove_outliers_percentile(df: pd.DataFrame, cols, upper_q: float = 0.99) ->
 def load_and_clean(data_dir: str = DATA_DIR, outlier_q: float = 0.99) -> pd.DataFrame:
     """5 ülkeyi birleştirir, eksik/aykırı değerleri temizler, yeni özellikleri ekler."""
     df = pd.concat([load_country(c, data_dir) for c in COUNTRIES], ignore_index=True)
-    df["category_name"] = df["category_name"].fillna("Bilinmeyen")
+    df["category_name"] = df["category_name"].fillna("Unknown")
 
     # --- Eksik değerler ---
     # Analiz için kritik sütunlarda eksik varsa satırı sil
@@ -100,54 +100,107 @@ def load_and_clean(data_dir: str = DATA_DIR, outlier_q: float = 0.99) -> pd.Data
 # 3) GÖRSELLEŞTİRMELER (Plotly)
 # ---------------------------------------------------------------------------
 def fig_histogram(df: pd.DataFrame, column: str = "views"):
-    """Temel: İzlenme/beğeni dağılımı histogramı (ülkelere göre renkli)."""
-    labels = {"views": "İzlenme", "likes": "Beğeni"}
+    """Distribution histogram of views/likes colored by country."""
+    labels = {"views": "Views", "likes": "Likes"}
+    metric_label = labels.get(column, column.capitalize())
+    
     fig = px.histogram(
-        df, x=column, color="country", nbins=50, barmode="overlay", opacity=0.65,
+        df,
+        x=column,
+        color="country",
+        nbins=50,
+        barmode="overlay",
+        opacity=0.65,
         marginal="box",
-        title=f"{labels.get(column, column)} Sayısı Dağılımı",
-        labels={column: labels.get(column, column), "country": "Ülke"},
+        title=f"{metric_label} Distribution Across Countries",
+        labels={column: metric_label, "country": "Country"},
     )
-    fig.update_layout(yaxis_title="Video Sayısı", bargap=0.05)
+    fig.update_layout(
+        yaxis_title="Video Count",
+        bargap=0.05,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
     return fig
 
 
 def fig_correlation(df: pd.DataFrame):
-    """Gelişmiş: Korelasyon ısı haritası."""
+    """Correlation heatmap across numerical and title/tag features."""
     cols = {
-        "views": "İzlenme",
-        "likes": "Beğeni",
-        "comment_count": "Yorum Sayısı",
-        "title_upper_count": "Başlık Büyük Harf",
-        "tag_count": "Etiket Sayısı",
-        "title_length": "Başlık Uzunluğu",
+        "views": "Views",
+        "likes": "Likes",
+        "comment_count": "Comments",
+        "title_upper_count": "Uppercase Count",
+        "tag_count": "Tag Count",
+        "title_length": "Title Length",
     }
     corr = df[list(cols)].corr().rename(index=cols, columns=cols).round(2)
     fig = px.imshow(
-        corr, text_auto=True, zmin=-1, zmax=1,
-        color_continuous_scale="RdBu_r", aspect="auto",
-        title="Metrikler Arası Korelasyon Isı Haritası",
+        corr,
+        text_auto=True,
+        zmin=-1,
+        zmax=1,
+        color_continuous_scale="RdBu_r",
+        aspect="auto",
+        title="Feature Correlation Heatmap",
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
 
-def fig_treemap(df: pd.DataFrame, top_channels: int = 5):
-    """Gelişmiş: Kategori -> Kanal hiyerarşisinde toplam izlenme treemap'i."""
-    grouped = df.groupby(["category_name", "channel_title"], as_index=False)["views"].sum()
-    # Her kategoride en çok izlenen N kanalı göster (grafiği okunabilir tutar)
+import textwrap
+
+def fig_treemap(df: pd.DataFrame, top_categories: int = 8, top_channels: int = 4):
+    """Hierarchical treemap of total views by Top Categories -> Top Channels."""
+    top_cats = (
+        df.groupby("category_name")["views"]
+        .sum()
+        .nlargest(top_categories)
+        .index
+    )
+    filtered = df[df["category_name"].isin(top_cats)].copy()
+    
+    grouped = filtered.groupby(["category_name", "channel_title"], as_index=False)["views"].sum()
     grouped = (
         grouped.sort_values("views", ascending=False)
         .groupby("category_name")
         .head(top_channels)
     )
+    
+    # Dar dikey kutulara da sığması için 9 karakterde bir satır kır (kelime ortasından bölme)
+    def wrap_label(name: str) -> str:
+        clean = name if len(name) <= 20 else name[:18] + ".."
+        return "<br>".join(textwrap.wrap(clean, width=9, break_long_words=False))
+    
+    grouped["wrapped_channel"] = grouped["channel_title"].apply(wrap_label)
+    
     fig = px.treemap(
-        grouped, path=[px.Constant("Tüm Kategoriler"), "category_name", "channel_title"],
-        values="views", color="views", color_continuous_scale="YlOrRd",
-        title="Kategorilere Göre Toplam İzlenme Payı (Treemap)",
+        grouped,
+        path=[px.Constant("All Categories"), "category_name", "wrapped_channel"],
+        values="views",
+        color="views",
+        color_continuous_scale="YlOrRd",
+        custom_data=["channel_title"],
+        title="Total View Share by Top Categories & Channels",
+        labels={"views": "Total Views"},
     )
-    fig.update_traces(hovertemplate="<b>%{label}</b><br>İzlenme: %{value:,.0f}<extra></extra>")
+    fig.update_traces(
+        maxdepth=3,
+        textposition="middle center",
+        tiling=dict(pad=2),
+        marker=dict(line=dict(width=1.2, color="#1e293b")),
+        hovertemplate="<b>%{customdata[0]}</b><br>Total Views: %{value:,.0f}<extra></extra>",
+        root_color="rgba(0,0,0,0)"
+    )
+    fig.update_layout(
+        margin=dict(t=50, l=5, r=5, b=5),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
     return fig
-
 
 # ---------------------------------------------------------------------------
 # Doğrudan çalıştırma

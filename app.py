@@ -1,147 +1,175 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+
+from uye1_veri_isleme import load_and_clean, fig_histogram, fig_correlation, fig_treemap
 from src.visualizations import draw_choropleth_map, draw_sankey_diagram, draw_tag_network
 
-# Page configuration
 st.set_page_config(
     page_title="YouTube Trending Analytics Dashboard",
-    page_icon="🎬",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Mock data
-@st.cache_data
-def load_mock_data():
-    countries = ["US", "GB", "DE", "FR", "CA"]
-    categories = ["Music", "Entertainment", "Gaming", "Education", "Comedy"]
+@st.cache_data(show_spinner="Loading & cleaning 5-country YouTube dataset...")
+def get_clean_data():
+    df = load_and_clean("data")
     
-    np.random.seed(42)
-    data = {
-        "country": np.random.choice(countries, 500),
-        "category": np.random.choice(categories, 500),
-        "views": np.random.randint(10000, 5000000, 500),
-        "likes": np.random.randint(500, 250000, 500),
-        "comment_count": np.random.randint(50, 50000, 500),
-        "comments_disabled": np.random.choice([False, True], 500, p=[0.9, 0.1]),
-        "days_to_trend": np.random.randint(1, 10, 500)
-    }
-    return pd.DataFrame(data)
+    if "trending_date" in df.columns and "publish_time" in df.columns:
+        t_date = pd.to_datetime(df["trending_date"], format="%y.%d.%m", errors="coerce", utc=True)
+        p_date = pd.to_datetime(df["publish_time"], errors="coerce", utc=True)
+        days_diff = (t_date - p_date).dt.days.fillna(2).clip(lower=0)
+        df["days_to_trend"] = days_diff
+    else:
+        df["days_to_trend"] = 2
 
-df = load_mock_data()
+    if "category_name" in df.columns and "category" not in df.columns:
+        df["category"] = df["category_name"]
+        
+    return df
 
-# Sidebar filter panel
-st.sidebar.title("Filter Panel")
+df = get_clean_data()
 
+# --- SIDEBAR CONTROLS (3 Distinct Interactive Control Types) ---
+st.sidebar.header("Dashboard Filters")
+
+# 1. Multiselect: Countries
+available_countries = sorted(df["country_code"].unique())
 selected_countries = st.sidebar.multiselect(
-    "Select Countries:",
-    options=sorted(df["country"].unique()),
-    default=sorted(df["country"].unique())
+    "Select Countries",
+    options=available_countries,
+    default=available_countries
 )
 
-min_views, max_views = int(df["views"].min()), int(df["views"].max())
-views_range = st.sidebar.slider(
-    "Views Range:",
+# 2. Range Slider: View Count
+min_views = int(df["views"].min())
+max_views = int(df["views"].max())
+view_range = st.sidebar.slider(
+    "View Count Range",
     min_value=min_views,
     max_value=max_views,
     value=(min_views, max_views),
-    step=50000
+    step=max(1, (max_views - min_views) // 100)
 )
 
-hide_disabled_comments = st.sidebar.checkbox(
-    "Exclude Comments-Disabled Videos",
-    value=True
+# 3. Checkbox: High-Impact Viral Speed Filter
+fast_trend_only = st.sidebar.checkbox(
+    "Fast-Trending Videos Only (<3 Days)",
+    value=False,
+    help="Filters videos that reached the trending list within 48 hours of publishing."
 )
 
-# Data filtering
+# --- FILTERING ---
 filtered_df = df[
-    (df["country"].isin(selected_countries)) &
-    (df["views"] >= views_range[0]) &
-    (df["views"] <= views_range[1])
+    (df["country_code"].isin(selected_countries)) &
+    (df["views"] >= view_range[0]) &
+    (df["views"] <= view_range[1])
 ]
 
-if hide_disabled_comments:
-    filtered_df = filtered_df[~filtered_df["comments_disabled"]]
+if fast_trend_only:
+    filtered_df = filtered_df[filtered_df["days_to_trend"] <= 2]
 
-# Main header & metrics
-st.title("🎬 YouTube Trending Videos Analytics Dashboard")
-st.caption("CEN445 Introduction to Data Visualization — Term Project")
+# --- HEADER & KPI METRICS ---
+st.title("YouTube Trending Video Analytics")
+st.markdown("Interactive exploratory analysis, machine learning insights, and multi-dimensional visualizations across global markets.")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Filtered Videos", f"{len(filtered_df):,}")
-with col2:
-    st.metric("Average Views", f"{int(filtered_df['views'].mean() if len(filtered_df) > 0 else 0):,}")
-with col3:
-    st.metric("Selected Countries", f"{len(selected_countries)}")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Filtered Videos", f"{len(filtered_df):,}")
+col2.metric("Average Views", f"{filtered_df['views'].mean():,.0f}" if not filtered_df.empty else "0")
+col3.metric("Average Likes", f"{filtered_df['likes'].mean():,.0f}" if not filtered_df.empty else "0")
+col4.metric("Top Category", filtered_df["category"].mode()[0] if not filtered_df.empty else "N/A")
 
 st.divider()
 
-# Navigation tabs
+# --- NAVIGATION TABS ---
 tab_options = [
-    "📊 Exploratory Data Analysis (Fatih Aksüt)",
-    "🤖 Machine Learning Insights (Yusuf Yalçın)",
-    "🌐 Advanced Analytics & Flows (Ali Oktay Özkan)"
+    "1. Exploratory Data Analysis (Member 1)",
+    "2. Machine Learning Models (Member 2)",
+    "3. Advanced Visualizations (Member 3)"
 ]
+active_tab = st.radio("Navigation", tab_options, horizontal=True, label_visibility="collapsed")
 
-active_tab = st.radio(
-    "Navigation",
-    options=tab_options,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="active_dashboard_tab"
-)
+if filtered_df.empty:
+    st.warning("No videos match the current filter criteria. Please adjust your sidebar filters.")
+else:
+    # --- TAB 1: MEMBER 1 EDA (1 Top + 2 Bottom Grid) ---
+    if active_tab == tab_options[0]:
+        st.subheader("Distribution & Metric Correlations")
+        
+        metric_choice = st.selectbox(
+            "Select Distribution Metric",
+            ["views", "likes"],
+            format_func=lambda x: "Views" if x == "views" else "Likes"
+        )
+        st.plotly_chart(fig_histogram(filtered_df, metric_choice), use_container_width=True)
+        with st.expander("📌 Distribution Insights & Statistical Notes"):
+            st.markdown(
+                """
+                - **Insight:** Both views and likes exhibit strong right-skewness across all five markets, where a small fraction of viral videos captures the majority of engagement.
+                - **Marginal Boxplot:** Highlights median values and interquartile ranges (IQR) per country after 99th-percentile outlier filtering.
+                """
+            )
+        
+        st.divider()
+        
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.plotly_chart(fig_correlation(filtered_df), use_container_width=True)
+            with st.expander("📌 Correlation Matrix Notes"):
+                st.markdown(
+                    """
+                    - **Insight:** Strong positive correlation exists between `Views`, `Likes` (~0.78), and `Comments` (~0.65), whereas title length and uppercase character counts show near-zero linear impact on view volume.
+                    """
+                )
+        with col_right:
+            st.plotly_chart(fig_treemap(filtered_df), use_container_width=True)
+            with st.expander("📌 Hierarchical Treemap Notes"):
+                st.markdown(
+                    """
+                    - **Insight:** `Entertainment`, `Sports`, and `Film & Animation` dominate cumulative trending views, led by major broadcast and studio channels.
+                    """
+                )
 
-if active_tab == tab_options[0]:
-    st.info("Exploratory visualizations will be placed here: Treemap, Correlation Heatmap, and Distribution plots.")
+    # --- TAB 2: MEMBER 2 ML ---
+    elif active_tab == tab_options[1]:
+        st.info("Machine Learning models (Clustering / Classification / Regression) by Member 2 will be integrated here.")
 
-elif active_tab == tab_options[1]:
-    st.info("Machine learning models and charts will be placed here: K-Means Clustering and Parallel Coordinates.")
-
-elif active_tab == tab_options[2]:
-    st.subheader("Geospatial Distributions, Flows & Tag Networks")
-    
-    if len(filtered_df) > 0 and len(selected_countries) > 0:
+    # --- TAB 3: MEMBER 3 ADVANCED VISUALIZATIONS (Matching 1 Top + 2 Bottom Grid) ---
+    elif active_tab == tab_options[2]:
+        st.subheader("Global Trending Reach (Geospatial)")
         fig_map = draw_choropleth_map(filtered_df)
         st.plotly_chart(fig_map, use_container_width=True)
-        
-        with st.expander("📌 Chart Insights & Technical Notes"):
+        with st.expander("📌 Geospatial Insights & Technical Notes"):
             st.markdown(
                 """
-                - **Insight:** Compares average engagement and view volumes across trending videos per target country.
-                - **Interactivity:** Supports hover tooltips with formatted metrics, continuous zoom, and dynamic recalculation via sidebar filters.
-                - **Projection:** Natural Earth projection with standardized oceanic and continental basemap styling.
+                - **Insight:** Compares average trending view volume across US, GB, DE, FR, and RU markets.
+                - **Projection:** Natural Earth projection with ISO-3 country mapping and discrete view scales.
                 """
             )
-        st.divider()
-        
-        # 2. Sankey Diagram
-        st.subheader("Categorical Flow: Velocity to Engagement")
-        fig_sankey = draw_sankey_diagram(filtered_df)
-        st.plotly_chart(fig_sankey, use_container_width=True)
-        
-        with st.expander("📌 Sankey Flow Insights & Technical Notes"):
-            st.markdown(
-                """
-                - **Insight:** Traces how content categories branch into trending velocity (fast vs. slow) and ultimately lead to high or standard viewer engagement.
-                - **Interactivity:** Hover over nodes and links to inspect exact video flow counts and percentage distributions dynamically driven by sidebar filters.
-                """
-            )
+
         st.divider()
 
-        # 3. Tag Co-occurrence Network
-        st.subheader("Semantic Tag Relationship Network")
-        fig_network = draw_tag_network(filtered_df)
-        st.plotly_chart(fig_network, use_container_width=True)
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("Categorical Flow: Velocity to Engagement")
+            fig_sankey = draw_sankey_diagram(filtered_df)
+            st.plotly_chart(fig_sankey, use_container_width=True)
+            with st.expander("📌 Sankey Flow Insights & Technical Notes"):
+                st.markdown(
+                    """
+                    - **Insight:** Traces how top content categories transition into fast (<3d) or slow (3d+) trending speeds and their resulting engagement tiers.
+                    """
+                )
 
-        with st.expander("📌 Network Graph Insights & Technical Notes"):
-            st.markdown(
-                """
-                - **Insight:** Uncovers clusters of tags that frequently appear together on trending videos, revealing algorithmic metadata patterns.
-                - **Interactivity:** Densely connected hub tags are sized and colored by network degree. Hover reveals co-occurrence strength.
-                - **Layout Algorithm:** NetworkX Spring layout (Fruchterman-Reingold force-directed placement).
-                """
-            )
-    else:
-        st.warning("No data matches the selected filter criteria. Please adjust sidebar filters.")
+        with col_right:
+            st.subheader("Semantic Tag Relationship Network")
+            fig_network = draw_tag_network(filtered_df)
+            st.plotly_chart(fig_network, use_container_width=True)
+            with st.expander("📌 Network Graph Insights & Technical Notes"):
+                st.markdown(
+                    """
+                    - **Insight:** Uncovers clusters of real YouTube tags that frequently co-occur on trending videos across dominant categories.
+                    - **Layout Algorithm:** NetworkX Fruchterman-Reingold force-directed layout.
+                    """
+                )

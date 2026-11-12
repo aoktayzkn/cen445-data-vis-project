@@ -11,17 +11,28 @@ COUNTRY_MAP = {
     "GB": "GBR",
     "DE": "DEU",
     "FR": "FRA",
-    "CA": "CAN"
+    "RU": "RUS"
 }
 
 def draw_choropleth_map(df: pd.DataFrame):
-    country_summary = (
-        df.groupby("country")
-        .agg(avg_views=("views", "mean"), video_count=("views", "count"))
-        .reset_index()
-    )
+    group_col = "country_code" if "country_code" in df.columns else "country"
     
-    country_summary["iso_alpha"] = country_summary["country"].map(COUNTRY_MAP)
+    if "country_code" in df.columns and "country" in df.columns:
+        country_summary = (
+            df.groupby(["country_code", "country"])
+            .agg(avg_views=("views", "mean"), video_count=("views", "count"))
+            .reset_index()
+        )
+        hover_col = "country"
+    else:
+        country_summary = (
+            df.groupby(group_col)
+            .agg(avg_views=("views", "mean"), video_count=("views", "count"))
+            .reset_index()
+        )
+        hover_col = group_col
+        
+    country_summary["iso_alpha"] = country_summary[group_col].map(COUNTRY_MAP)
     
     min_v = country_summary["avg_views"].min()
     max_v = country_summary["avg_views"].max()
@@ -37,7 +48,7 @@ def draw_choropleth_map(df: pd.DataFrame):
         country_summary,
         locations="iso_alpha",
         color="avg_views",
-        hover_name="country",
+        hover_name=hover_col,
         hover_data={"iso_alpha": False, "avg_views": ":,.0f", "video_count": ":,"},
         color_continuous_scale="YlOrRd",
         title="Average Video Views by Target Country"
@@ -55,6 +66,7 @@ def draw_choropleth_map(df: pd.DataFrame):
         showlakes=True,
         lakecolor="#1e293b",
         projection_type="natural earth",
+        lataxis_range=[22, 78],  # Kuzey yarımküre odaklı temiz kadraj
         bgcolor="rgba(0,0,0,0)"
     )
     
@@ -79,6 +91,10 @@ def draw_choropleth_map(df: pd.DataFrame):
 def draw_sankey_diagram(df: pd.DataFrame):
     temp_df = df.copy()
     
+    # En popüler 8 kategoriyi koru, kalanları 'Other' altında grupla (görsel karmaşayı önler)
+    top_cats = temp_df["category"].value_counts().nlargest(8).index
+    temp_df["clean_category"] = temp_df["category"].where(temp_df["category"].isin(top_cats), "Other Categories")
+    
     temp_df["trend_speed"] = temp_df["days_to_trend"].apply(
         lambda x: "Fast Trend (<3d)" if x <= 2 else "Slow Trend (3d+)"
     )
@@ -89,7 +105,7 @@ def draw_sankey_diagram(df: pd.DataFrame):
         lambda x: "High Engagement" if x >= median_engagement else "Standard Engagement"
     )
     
-    flow1 = temp_df.groupby(["category", "trend_speed"]).size().reset_index(name="count")
+    flow1 = temp_df.groupby(["clean_category", "trend_speed"]).size().reset_index(name="count")
     flow1.columns = ["source_label", "target_label", "count"]
     
     flow2 = temp_df.groupby(["trend_speed", "engagement_level"]).size().reset_index(name="count")
@@ -134,74 +150,58 @@ def draw_sankey_diagram(df: pd.DataFrame):
     )
     
     fig.update_layout(
-        title="Content Velocity & Audience Engagement Flow",
+        title="Content Velocity & Audience Engagement Flow (Top Categories)",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=50, b=10),
-        font=dict(family="sans-serif", size=12, color="#e2e8f0")
+        font=dict(family="sans-serif", size=12)
     )
     
     return fig
 
-def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: int = 2):
-    category_colors = {
-        "Music": "#ef4444",
-        "Entertainment": "#f59e0b",
-        "Gaming": "#3b82f6",
-        "Comedy": "#10b981",
-        "Education": "#8b5cf6",
-        "Universal": "#ec4899"
-    }
+def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 22, min_cooccurrence: int = 5):
+    palette = ["#ef4444", "#f59e0b", "#3b82f6", "#10b981", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"]
+    
+    # Gerçek etiketleri ve ait oldukları baskın kategorileri çıkar
+    tag_counts = Counter()
+    tag_cat_counter = {}
+    video_tag_lists = []
+    
+    for tags_raw, cat in zip(df["tags"].astype(str), df["category"].astype(str)):
+        parsed = [
+            t.strip().lower()
+            for t in tags_raw.replace('"', '').split("|")
+            if t.strip() and t.strip() != "[none]" and len(t.strip()) > 1
+        ]
+        unique_tags = list(set(parsed))
+        video_tag_lists.append(unique_tags)
+        for t in unique_tags:
+            tag_counts[t] += 1
+            if t not in tag_cat_counter:
+                tag_cat_counter[t] = Counter()
+            tag_cat_counter[t][cat] += 1
 
-    if "tags" not in df.columns or df["tags"].dropna().empty:
-        domain_tags = {
-            "Music": ["vevo", "official", "audio", "pop", "live", "remix"],
-            "Entertainment": ["vlog", "celebrity", "react", "show", "interview"],
-            "Gaming": ["gameplay", "walkthrough", "stream", "fps", "esports"],
-            "Comedy": ["sketch", "standup", "parody", "joke", "prank"],
-            "Education": ["tutorial", "science", "facts", "guide", "tech"]
-        }
-        universal_bridges = ["viral", "trending", "challenge", "review", "shorts"]
-
-        tag_category_map = {}
-        for cat, tags in domain_tags.items():
-            for t in tags:
-                tag_category_map[t] = cat
-        for u in universal_bridges:
-            tag_category_map[u] = "Universal"
-
-        np.random.seed(42)
-        df_tags = []
-        for cat in df["category"]:
-            specific_sample = list(np.random.choice(domain_tags.get(cat, ["video"]), size=3, replace=False))
-            if np.random.rand() < 0.65:
-                specific_sample.append(np.random.choice(universal_bridges))
-            df_tags.append(specific_sample)
-    else:
-        df_tags = df["tags"].astype(str).apply(
-            lambda t: [
-                tag.strip().lower()
-                for tag in t.replace('"', '').split("|")
-                if tag.strip() and tag.strip() != "[none]"
-            ]
-        )
-        tag_category_map = {}
-
-    all_tags = [tag for sublist in df_tags for tag in sublist]
-    tag_counts = Counter(all_tags)
     frequent_tags = {tag for tag, _ in tag_counts.most_common(top_n_tags)}
+    
+    # Her etikete en çok geçtiği baskın kategoriyi ata
+    dominant_categories = {}
+    for tag in frequent_tags:
+        dominant_categories[tag] = tag_cat_counter[tag].most_common(1)[0][0]
+        
+    unique_cats = sorted(set(dominant_categories.values()))
+    category_colors = {cat: palette[i % len(palette)] for i, cat in enumerate(unique_cats)}
 
+    # Birliktelik (co-occurrence) hesapla
     edge_counts = Counter()
-    for tags in df_tags:
-        filtered = [t for t in set(tags) if t in frequent_tags]
+    for tags in video_tag_lists:
+        filtered = [t for t in tags if t in frequent_tags]
         if len(filtered) >= 2:
             for pair in combinations(sorted(filtered), 2):
                 edge_counts[pair] += 1
 
     G = nx.Graph()
     for tag in frequent_tags:
-        cat = tag_category_map.get(tag, "Universal")
-        G.add_node(tag, count=tag_counts[tag], category=cat)
+        G.add_node(tag, count=tag_counts[tag], category=dominant_categories[tag])
 
     for (t1, t2), weight in edge_counts.items():
         if weight >= min_cooccurrence:
@@ -213,12 +213,12 @@ def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: i
         fig.update_layout(
             title="Semantic Tag Network (Insufficient Co-occurrences)",
             paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#0f172a")
+            plot_bgcolor="rgba(0,0,0,0)"
         )
         return fig
 
-    pos = nx.spring_layout(G, seed=42, k=0.45, iterations=60)
+    # Düğümleri birbirinden uzaklaştıran daha geniş yayılım (k=0.85)
+    pos = nx.spring_layout(G, seed=42, k=0.85, iterations=80)
 
     edge_x = []
     edge_y = []
@@ -231,11 +231,15 @@ def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: i
     edge_trace = go.Scatter(
         x=edge_x,
         y=edge_y,
-        line=dict(width=1.1, color="rgba(148, 163, 184, 0.35)"),
+        line=dict(width=1.0, color="rgba(148, 163, 184, 0.25)"),
         hoverinfo="none",
         mode="lines",
         showlegend=False
     )
+
+    # Düğüm boyutlarını gerçek frekansa göre 16px - 34px arasına normalize et
+    freqs = [G.nodes[n]["count"] for n in G.nodes()]
+    min_f, max_f = min(freqs), max(freqs)
 
     node_x = []
     node_y = []
@@ -249,15 +253,16 @@ def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: i
         node_y.append(y)
         degree = G.degree[node]
         freq = G.nodes[node]["count"]
-        cat = G.nodes[node].get("category", "Universal")
+        cat = G.nodes[node]["category"]
         
-        node_color.append(category_colors.get(cat, "#38bdf8"))
-        node_size.append(16 + np.sqrt(freq) * 4)
+        norm_size = 24 if max_f == min_f else 16 + ((freq - min_f) / (max_f - min_f)) * 18
+        node_size.append(norm_size)
+        node_color.append(category_colors[cat])
         node_text.append(
             f"<b>#{node}</b><br>"
-            f"Category: {cat}<br>"
+            f"Dominant Category: {cat}<br>"
             f"Connected Tags: {degree}<br>"
-            f"Occurrences: {freq}"
+            f"Video Occurrences: {freq:,}"
         )
 
     node_trace = go.Scatter(
@@ -266,10 +271,7 @@ def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: i
         mode="markers+text",
         text=[f"#{n}" for n in G.nodes()],
         textposition="top center",
-        textfont=dict(
-            family="sans-serif",
-            size=11
-        ),
+        textfont=dict(family="sans-serif", size=11),
         hoverinfo="text",
         hovertext=node_text,
         showlegend=False,
@@ -280,40 +282,40 @@ def draw_tag_network(df: pd.DataFrame, top_n_tags: int = 24, min_cooccurrence: i
         )
     )
 
-    # Re-inserting legend traces
     legend_traces = []
-    present_categories = set([G.nodes[n].get("category", "Universal") for n in G.nodes()])
-    for cat in sorted(present_categories):
+    for cat in unique_cats:
         legend_traces.append(
             go.Scatter(
                 x=[None],
                 y=[None],
                 mode="markers",
                 name=cat,
-                marker=dict(size=10, color=category_colors.get(cat, "#38bdf8")),
+                marker=dict(size=10, color=category_colors[cat]),
                 showlegend=True
             )
         )
 
-    # Layout: Başlık, etiketler ve lejant hem karanlık hem aydınlık modda otomatik uyum sağlar
     fig = go.Figure(
         data=[edge_trace, node_trace] + legend_traces,
         layout=go.Layout(
             title=dict(
-                text="Semantic Tag Co-occurrence & Cross-Category Network",
-                font=dict(size=14)
+                text="Semantic Tag Co-occurrence & Dominant Category Network",
+                font=dict(size=14),
+                y=0.96,
+                x=0,
+                xanchor="left"
             ),
             showlegend=True,
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
                 y=1.02,
-                xanchor="right",
-                x=1,
-                font=dict(size=11)
+                xanchor="left",
+                x=0,
+                font=dict(size=10)
             ),
             hovermode="closest",
-            margin=dict(b=20, l=10, r=10, t=60),
+            margin=dict(b=20, l=10, r=10, t=85),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
