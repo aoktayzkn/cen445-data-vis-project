@@ -41,6 +41,23 @@ def get_clean_data():
 
 df = get_clean_data()
 
+@st.cache_data(show_spinner=False)
+def get_cached_eda_figs(data: pd.DataFrame, metric: str):
+    return (
+        fig_histogram(data, metric),
+        fig_correlation(data),
+        fig_treemap(data),
+    )
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_adv_figs(data: pd.DataFrame):
+    return (
+        draw_choropleth_map(data),
+        draw_sankey_diagram(data),
+        draw_tag_network(data),
+    )
+
 # --- SIDEBAR CONTROLS (3 Distinct Interactive Control Types) ---
 st.sidebar.header("Dashboard Filters")
 
@@ -113,7 +130,9 @@ else:
             ["views", "likes"],
             format_func=lambda x: "Views" if x == "views" else "Likes"
         )
-        st.plotly_chart(fig_histogram(filtered_df, metric_choice), use_container_width=True)
+        f_hist, f_corr, f_tree = get_cached_eda_figs(filtered_df, metric_choice)
+        st.plotly_chart(f_hist, use_container_width=True)
+
         with st.expander("📌 Distribution Insights & Statistical Notes"):
             st.markdown(
                 """
@@ -128,7 +147,8 @@ else:
 
         col_left, col_right = st.columns(2)
         with col_left:
-            st.plotly_chart(fig_correlation(filtered_df), use_container_width=True)
+            # ESKİSİ: st.plotly_chart(fig_correlation(filtered_df), use_container_width=True)
+            st.plotly_chart(f_corr, use_container_width=True)
             with st.expander("📌 Correlation Matrix Notes"):
                 st.markdown(
                     """
@@ -137,7 +157,8 @@ else:
                     """
                 )
         with col_right:
-            st.plotly_chart(fig_treemap(filtered_df), use_container_width=True)
+            # ESKİSİ: st.plotly_chart(fig_treemap(filtered_df), use_container_width=True)
+            st.plotly_chart(f_tree, use_container_width=True)
             with st.expander("📌 Hierarchical Treemap Notes"):
                 st.markdown(
                     """
@@ -263,8 +284,9 @@ else:
 
     # --- TAB 3: MEMBER 3 ADVANCED VISUALIZATIONS (Matching 1 Top + 2 Bottom Grid) ---
     elif active_tab == tab_options[2]:
+        fig_map, fig_sankey, fig_network = get_cached_adv_figs(filtered_df)
         st.subheader("Global Trending Reach (Geospatial)")
-        fig_map = draw_choropleth_map(filtered_df)
+        # SİLİNDİ: fig_map = draw_choropleth_map(filtered_df)
         st.plotly_chart(fig_map, use_container_width=True)
         with st.expander("📌 Geospatial Insights & Technical Notes"):
             st.markdown(
@@ -281,7 +303,7 @@ else:
         col_left, col_right = st.columns(2)
         with col_left:
             st.subheader("Categorical Flow: Velocity to Engagement")
-            fig_sankey = draw_sankey_diagram(filtered_df)
+            # SİLİNDİ: fig_sankey = draw_sankey_diagram(filtered_df)
             st.plotly_chart(fig_sankey, use_container_width=True)
             with st.expander("📌 Sankey Flow Insights & Technical Notes"):
                 st.markdown(
@@ -293,7 +315,7 @@ else:
 
         with col_right:
             st.subheader("Semantic Tag Relationship Network")
-            fig_network = draw_tag_network(filtered_df)
+            # SİLİNDİ: fig_network = draw_tag_network(filtered_df)
             st.plotly_chart(fig_network, use_container_width=True)
             with st.expander("📌 Network Graph Insights & Technical Notes"):
                 st.markdown(
