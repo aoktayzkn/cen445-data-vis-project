@@ -19,7 +19,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, r2_score, roc_auc_score, silhouette_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 
 CLUSTER_PALETTE = [
@@ -175,13 +175,14 @@ def run_kmeans_pca_pipeline(df: pd.DataFrame, n_clusters: int = 4):
 # ---------------------------------------------------------------------------
 # 3) SUPERVISED ML: RANDOM FOREST CLASSIFIER & REGRESSOR
 # ---------------------------------------------------------------------------
+
 RF_CONTINUOUS_FEATURES = {
     "tag_count": "Tag Count (SEO)",
     "title_length": "Title Length (Chars)",
     "upper_ratio": "Uppercase Ratio (%)",
     "publish_hour": "Publish Hour (0-23 UTC)",
-    "days_to_trend": "Days to Trend (Velocity)",
 }
+
 
 
 @st.cache_data(show_spinner=False)
@@ -196,24 +197,87 @@ def run_random_forest_pipeline(df: pd.DataFrame):
     y_clf = (ml_df["engagement_rate"] >= median_eng).astype(int)
     y_reg = ml_df["engagement_rate"].values
 
-    cat_freq = ml_df["category"].value_counts(normalize=True)
-    ml_df["category_tier"] = ml_df["category"].map(cat_freq).fillna(0.05)
 
-    base_features = list(RF_CONTINUOUS_FEATURES.keys()) + ["category_tier"]
-    country_dummies = pd.get_dummies(
-        ml_df["country_code"], prefix="market", drop_first=False
+    # Numerical features
+    base_features = list(RF_CONTINUOUS_FEATURES.keys())
+
+    # One-hot encoding for video categories
+    category_dummies = pd.get_dummies(
+        ml_df["category"].fillna("Unknown"),
+        prefix="category",
+        dtype=int
     )
-    X_df = pd.concat([ml_df[base_features], country_dummies], axis=1)
+
+    # One-hot encoding for countries
+    country_dummies = pd.get_dummies(
+        ml_df["country_code"],
+        prefix="market",
+        dtype=int
+    )
+
+    # Combine all model features
+    X_df = pd.concat(
+        [ml_df[base_features], category_dummies, country_dummies],
+        axis=1
+    )
+
+
+
 
     feature_display_names = {
         **RF_CONTINUOUS_FEATURES,
-        "category_tier": "Category Popularity Weight",
-        **{col: f"Market: {col.split('_')[1]}" for col in country_dummies.columns},
+        **{
+            col: f"Category: {col.removeprefix('category_')}"
+            for col in category_dummies.columns
+        },
+        **{
+            col: f"Market: {col.removeprefix('market_')}"
+            for col in country_dummies.columns
+        },
     }
 
-    X_train, X_test, y_clf_train, y_clf_test, y_reg_train, y_reg_test = train_test_split(
-        X_df, y_clf, y_reg, test_size=0.25, random_state=42, stratify=y_clf
+
+
+    # Split data by video ID to prevent data leakage
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=0.25,
+        random_state=42
     )
+
+    train_idx, test_idx = next(
+        splitter.split(
+            X_df,
+            y_clf,
+            groups=ml_df["video_id"]
+        )
+    )
+
+    # Training and test features
+    X_train = X_df.iloc[train_idx]
+    X_test = X_df.iloc[test_idx]
+
+    # Classification targets
+    y_clf_train = y_clf.iloc[train_idx]
+    y_clf_test = y_clf.iloc[test_idx]
+
+    # Regression targets
+    y_reg_train = y_reg[train_idx]
+    y_reg_test = y_reg[test_idx]
+
+
+    # Check if video IDs overlap between train and test
+    train_ids = set(ml_df["video_id"].iloc[train_idx])
+    test_ids = set(ml_df["video_id"].iloc[test_idx])
+
+    common_ids = train_ids.intersection(test_ids)
+
+    print("Shared Video IDs:", len(common_ids))
+    print("Training Rows:", len(X_train))
+    print("Test Rows:", len(X_test))
+
+    assert len(common_ids) == 0, "Data leakage detected!"
+
 
     rf_clf = RandomForestClassifier(
         n_estimators=120,
