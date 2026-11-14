@@ -113,7 +113,7 @@ else:
             ["views", "likes"],
             format_func=lambda x: "Views" if x == "views" else "Likes"
         )
-        st.plotly_chart(fig_histogram(filtered_df, metric_choice), use_container_width=True)
+        st.plotly_chart(fig_histogram(filtered_df, metric_choice), width="stretch")
         with st.expander("📌 Distribution Insights & Statistical Notes"):
             st.markdown(
                 """
@@ -128,7 +128,7 @@ else:
 
         col_left, col_right = st.columns(2)
         with col_left:
-            st.plotly_chart(fig_correlation(filtered_df), use_container_width=True)
+            st.plotly_chart(fig_correlation(filtered_df), width="stretch")
             with st.expander("📌 Correlation Matrix Notes"):
                 st.markdown(
                     """
@@ -137,7 +137,7 @@ else:
                     """
                 )
         with col_right:
-            st.plotly_chart(fig_treemap(filtered_df), use_container_width=True)
+            st.plotly_chart(fig_treemap(filtered_df), width="stretch")
             with st.expander("📌 Hierarchical Treemap Notes"):
                 st.markdown(
                     """
@@ -152,7 +152,7 @@ else:
 
         if len(filtered_df) < 40:
             st.warning(
-                "Please broaden your sidebar filters to include at least 40 videos for reliable Machine Learning training and cross-validation.")
+                "Please broaden your sidebar filters to include at least 40 videos for machine learning training and evaluation.")
         else:
             # --- INTERACTIVE ML HYPERPARAMETER & FEATURE CONTROLS ---
             ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1.2, 1.3, 1.3, 1.4])
@@ -213,51 +213,114 @@ else:
                 "RF Regressor R² (Engagement)",
                 f"{rf_res['reg_r2']:.3f}",
                 f"Median Thr: {rf_res['median_eng']:.2f}%",
-                help="Out-of-sample variance explained by Random Forest Regressor using pre-publication & velocity features.",
+                help="Out-of-sample variance explained by Random Forest Regressor using the selected video metadata features.",
             )
 
             # --- CHART 1 (TOP FULL-WIDTH): PARALLEL COORDINATES ---
             fig_parcoords = draw_parallel_coordinates(kmeans_res)
-            st.plotly_chart(fig_parcoords, use_container_width=True)
-            with st.expander("📌 Parallel Coordinates & K-Means Archetype Insights"):
+            st.plotly_chart(fig_parcoords, width="stretch")
+            with st.expander("📌 Video Group Insights"):
                 st.markdown(
                     """
-- **Analytical Insight:** Unsupervised **K-Means clustering** on log-normalized metrics uncovers distinct behavioral video archetypes (e.g., *Mega-Viral Blockbusters*, *High-Engagement Community*, *Fast-Burn Click-Drivers*, and *SEO Tag-Heavy Performers*).
+**What it shows:** K-Means groups videos with similar features.
 
-- **Interactive Brushing:** Drag vertically along any axis to isolate specific behavioral regimes and observe how metadata attributes (`Title Length`, `Uppercase %`, `Tag Count`) co-vary with audience reach.
+**Key insight:** Groups differ in views, engagement, and title style.
+
+**How to use:** Select a range on an axis to explore the groups.
                     """
                 )
 
             st.divider()
 
-            # --- BOTTOM ROW: 3D PCA MANIFOLD (LEFT) + RANDOM FOREST SURFACE (RIGHT) ---
-            col_left, col_right = st.columns(2)
-            with col_left:
-                fig_pca3d = draw_pca_3d_clusters(kmeans_res)
-                st.plotly_chart(fig_pca3d, use_container_width=True)
-                with st.expander("📌 3D PCA Manifold & Dimensionality Reduction Notes"):
-                    st.markdown(
-                        f"""
-- **Methodology:** Projects the 7-dimensional standardized feature space onto its top 3 orthogonal Principal Components, preserving **{kmeans_res['total_var']:.1f}%** of total variance.
+            # --- BOTTOM CHARTS: PCA HEADER ALIGNED WITH THE RF SELECTORS ---
+            # Left title starts at the same height as the two selectors on the right.
+            # Keep Plotly's interactive cluster legend (users can toggle clusters).
+            rf_country, rf_category = None, None
+            col_left, col_right = st.columns(2, gap="large")
 
-- **Centroid Geometry:** White diamond markers denote the exact geometric center of each K-Means cluster in 3D latent space. Rotate, zoom, and hover over individual videos to inspect outlier trajectories.
-                        """
-                    )
+            with col_left:
+                pca_title = f"3D PCA Clusters ({kmeans_res['total_var']:.1f}% Variance Explained)"
+                st.markdown(
+                    f'<div style="font-size:22px;font-weight:700;line-height:1.3;'
+                    f'padding-top:2px;">{pca_title}</div>',
+                    unsafe_allow_html=True,
+                )
+                fig_pca3d = draw_pca_3d_clusters(kmeans_res)
+                fig_pca3d.update_layout(
+                    title=None,  # Show title above chart to avoid Plotly toolbar overlap.
+                    height=570,
+                    margin=dict(l=10, r=10, t=92, b=25),
+                    legend=dict(
+                        orientation="h", x=0, y=1.04,
+                        yanchor="bottom", font=dict(size=15),
+                    ),
+                    scene=dict(domain=dict(x=[0.0, 1.0], y=[0.02, 0.91])),
+                )
+                st.plotly_chart(fig_pca3d, width="stretch")
 
             with col_right:
+                if rf_view_mode == "surface":
+                    country_col, category_col = st.columns(2)
+                    with country_col:
+                        rf_country = st.selectbox(
+                            "Reference Country",
+                            sorted(rf_res["ml_df"]["country_code"].dropna().unique()),
+                            key="rf_reference_country",
+                        )
+                    available_categories = sorted(
+                        rf_res["ml_df"].loc[
+                            rf_res["ml_df"]["country_code"] == rf_country, "category"
+                        ].dropna().unique()
+                    )
+                    with category_col:
+                        rf_category = st.selectbox(
+                            "Reference Category",
+                            available_categories,
+                            key="rf_reference_category",
+                        )
+
                 fig_rf = draw_rf_decision_surface(
                     rf_res,
                     x_feat=rf_x_feat,
                     y_feat=rf_y_feat,
                     view_mode=rf_view_mode,
+                    country_code=rf_country,
+                    category=rf_category,
                 )
-                st.plotly_chart(fig_rf, use_container_width=True)
-                with st.expander("📌 Random Forest Non-Linear Virality & Explainability Notes"):
+                if rf_view_mode == "surface":
+                    fig_rf.update_layout(title=dict(text="RF High-Engagement Probability"))
+                fig_rf.update_layout(height=520)
+                st.plotly_chart(fig_rf, width="stretch")
+
+            # Short PCA guide in its own row, keeping both expanders aligned.
+            pca_guide_col, _ = st.columns(2, gap="large")
+            with pca_guide_col:
+                st.caption("PC1 = Engagement  |  PC2 = Views & Time  |  PC3 = Tags & Titles")
+
+            # Put both note expanders in a NEW ROW rather than inside the chart
+            # columns. This keeps them aligned when chart heights differ.
+            notes_left, notes_right = st.columns(2, gap="large")
+            with notes_left:
+                with st.expander("📌 3D PCA Insights"):
                     st.markdown(
                         f"""
-- **Why Random Forest Beats Linear Correlation:** While Tab 1 showed near-zero Pearson linear correlation for title/tag metadata, our **Random Forest** (**ROC-AUC: {rf_res['roc_auc']:.3f}**) captures **non-linear threshold effects** and multi-feature interactions without data leakage.
+**What it shows:** PCA displays video groups in 3D.
 
-- **Decision Surface:** Contour isolines map the predicted probability of achieving High-Engagement Virality (`>= {rf_res['median_eng']:.2f}%` engagement rate) across `{RF_CONTINUOUS_FEATURES[rf_x_feat]}` and `{RF_CONTINUOUS_FEATURES[rf_y_feat]}`.
+**Key insight:** The three axes explain **{kmeans_res['total_var']:.1f}%** of the data's variation.
+
+**How to use:** Rotate the chart or hover over points. White diamonds show group centers.
+                        """
+                    )
+
+            with notes_right:
+                with st.expander("📌 Random Forest Insights"):
+                    st.markdown(
+                        f"""
+**What it shows:** Random Forest estimates high engagement from video features.
+
+**Key insight:** Its test ROC-AUC is **{rf_res['roc_auc']:.3f}**. It predicts above-median engagement (**{rf_res['median_eng']:.2f}%**), not whether a video becomes trending.
+
+**How to use:** Select features, country, and category to explore predictions. Feature Importance shows which inputs the model uses most.
                         """
                     )
 
@@ -265,7 +328,7 @@ else:
     elif active_tab == tab_options[2]:
         st.subheader("Global Trending Reach (Geospatial)")
         fig_map = draw_choropleth_map(filtered_df)
-        st.plotly_chart(fig_map, use_container_width=True)
+        st.plotly_chart(fig_map, width="stretch")
         with st.expander("📌 Geospatial Insights & Technical Notes"):
             st.markdown(
                 """
@@ -282,7 +345,7 @@ else:
         with col_left:
             st.subheader("Categorical Flow: Velocity to Engagement")
             fig_sankey = draw_sankey_diagram(filtered_df)
-            st.plotly_chart(fig_sankey, use_container_width=True)
+            st.plotly_chart(fig_sankey, width="stretch")
             with st.expander("📌 Sankey Flow Insights & Technical Notes"):
                 st.markdown(
                     """
@@ -294,7 +357,7 @@ else:
         with col_right:
             st.subheader("Semantic Tag Relationship Network")
             fig_network = draw_tag_network(filtered_df)
-            st.plotly_chart(fig_network, use_container_width=True)
+            st.plotly_chart(fig_network, width="stretch")
             with st.expander("📌 Network Graph Insights & Technical Notes"):
                 st.markdown(
                     """

@@ -75,35 +75,35 @@ def engineer_ml_features(df: pd.DataFrame) -> pd.DataFrame:
 # 2) UNSUPERVISED ML: K-MEANS CLUSTERING + 3D PCA
 # ---------------------------------------------------------------------------
 def _assign_archetype_names(summary_df: pd.DataFrame) -> dict:
-    """Assigns data-driven behavioral archetype labels based on cluster centroids."""
+    """Assign short, descriptive names using the strongest measured cluster features.
+
+    The labels are descriptive, not causal. When k changes, names are recalculated.
+    """
     names = {}
     remaining = set(summary_df.index)
 
-    if remaining:
-        c_viral = summary_df.loc[list(remaining), "log_views"].idxmax()
-        names[c_viral] = "Mega-Viral Blockbusters"
-        remaining.remove(c_viral)
+    # Use distinct clusters for the main four measurable characteristics.
+    rules = [
+        ("log_views", "High Views"),
+        ("engagement_rate", "High Engagement"),
+        ("upper_ratio", "Uppercase Titles"),
+        ("title_length", "Long Titles"),
+    ]
+    for feature, label in rules:
+        if not remaining:
+            break
+        cluster_id = summary_df.loc[sorted(remaining), feature].idxmax()
+        names[cluster_id] = label
+        remaining.remove(cluster_id)
 
-    if remaining:
-        c_eng = summary_df.loc[list(remaining), "engagement_rate"].idxmax()
-        names[c_eng] = "High-Engagement Community"
-        remaining.remove(c_eng)
+    # Extra clusters with k=5 or 6 do not receive unsupported claims.
+    for cluster_id in sorted(remaining):
+        names[cluster_id] = "Other Videos"
 
-    if remaining:
-        c_fast = summary_df.loc[list(remaining), "upper_ratio"].idxmax()
-        names[c_fast] = "Fast-Burn Click-Drivers"
-        remaining.remove(c_fast)
-
-    if remaining:
-        c_seo = summary_df.loc[list(remaining), "tag_count"].idxmax()
-        names[c_seo] = "SEO & Tag-Heavy Performers"
-        remaining.remove(c_seo)
-
-    fallback_labels = ["Mainstream Steady Reach", "Emerging / Niche Content"]
-    for idx, c_id in enumerate(sorted(remaining)):
-        names[c_id] = fallback_labels[idx % len(fallback_labels)]
-
-    return {int(c_id): f"C{int(c_id) + 1}: {label}" for c_id, label in names.items()}
+    return {
+        int(cluster_id): f"C{int(cluster_id) + 1}: {label}"
+        for cluster_id, label in names.items()
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -141,6 +141,18 @@ def run_kmeans_pca_pipeline(df: pd.DataFrame, n_clusters: int = 4):
 
     centroids_pca = pca.transform(kmeans.cluster_centers_)
     var_ratios = pca.explained_variance_ratio_ * 100.0
+
+
+    # PCA feature contributions
+    pca_loadings = pd.DataFrame(
+        pca.components_.T,
+        index=feature_cols,
+        columns=["PC1", "PC2", "PC3"]
+    )
+
+    print("\n--- PCA FEATURE LOADINGS ---")
+    print(pca_loadings.round(3))
+
 
     centroid_summary = ml_df.groupby("cluster_id")[feature_cols].mean()
     archetype_map = _assign_archetype_names(centroid_summary)
@@ -334,115 +346,100 @@ def run_random_forest_pipeline(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # 4) ADVANCED VISUALIZATION 1: INTERACTIVE PARALLEL COORDINATES (go.Parcoords)
 # ---------------------------------------------------------------------------
-def draw_parallel_coordinates(kmeans_res: dict, max_samples: int = 2500):
-    """
-    Draws an interactive multi-dimensional Parallel Coordinates plot for K-Means clusters.
+def draw_parallel_coordinates(kmeans_res: dict, max_samples: int = 220):
+    """Interactive overview of the existing K-Means clusters.
+
+    For clarity, only the displayed lines are sampled; K-Means and PCA are
+    unchanged. The C1/C2/... labels are a display mapping, not new clusters.
     """
     ml_df = kmeans_res["df"]
     archetype_map = kmeans_res["archetype_map"]
     n_clusters = len(archetype_map)
 
-    if len(ml_df) > max_samples:
-        plot_df = ml_df.sample(n=max_samples, random_state=42).reset_index(drop=True)
-    else:
-        plot_df = ml_df.copy()
+    plot_df = (
+        ml_df.sample(n=max_samples, random_state=42).reset_index(drop=True)
+        if len(ml_df) > max_samples else ml_df.copy().reset_index(drop=True)
+    )
 
-    selected_colors = CLUSTER_PALETTE[:n_clusters]
-    if n_clusters == 1:
-        colorscale = [[0.0, selected_colors[0]], [1.0, selected_colors[0]]]
-    else:
-        colorscale = [
-            [i / (n_clusters - 1), selected_colors[i]] for i in range(n_clusters)
-        ]
+    # One colour per cluster; transparent lines help avoid visual overplotting.
+    colors = CLUSTER_PALETTE[:n_clusters]
+    colorscale = []
+    for i, color in enumerate(colors):
+        rgb = tuple(int(color[j:j + 2], 16) for j in (1, 3, 5))
+        rgba = f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.58)"
+        a, b = i / n_clusters, (i + 1) / n_clusters
+        colorscale.extend([[a, rgba], [b - 1e-6, rgba]])
+    colorscale.append([1.0, colorscale[-1][1]])
 
-    eng_cap = float(np.percentile(plot_df["engagement_rate"], 99))
-    com_cap = float(np.percentile(plot_df["comments_per_1k"], 99))
+    low = float(plot_df["log_views"].min())
+    high = float(plot_df["log_views"].max())
+    ticks = list(range(int(np.ceil(low)), int(np.floor(high)) + 1))
 
+    def format_views(power):
+        count = 10 ** power
+        if count >= 1_000_000:
+            return f"{count / 1_000_000:g}M"
+        if count >= 1_000:
+            return f"{count / 1_000:g}K"
+        return f"{count:g}"
+
+    engagement_cap = max(0.1, float(np.percentile(plot_df["engagement_rate"], 99)))
     dimensions = [
-        dict(
-            range=[float(plot_df["log_views"].min()), float(plot_df["log_views"].max())],
-            label="Log10(Views)",
-            values=plot_df["log_views"],
-        ),
-        dict(
-            range=[0, eng_cap],
-            label="Engagement (%)",
-            values=plot_df["engagement_rate"].clip(upper=eng_cap),
-        ),
-        dict(
-            range=[0, com_cap],
-            label="Comments / 1K",
-            values=plot_df["comments_per_1k"].clip(upper=com_cap),
-        ),
-        dict(
-            range=[0, float(plot_df["days_to_trend"].max())],
-            label="Days to Trend",
-            values=plot_df["days_to_trend"],
-        ),
-        dict(
-            range=[float(plot_df["title_length"].min()), float(plot_df["title_length"].max())],
-            label="Title Length",
-            values=plot_df["title_length"],
-        ),
-        dict(
-            range=[0, 100],
-            label="Uppercase (%)",
-            values=plot_df["upper_ratio"],
-        ),
-        dict(
-            range=[0, float(plot_df["tag_count"].max())],
-            label="Tag Count",
-            values=plot_df["tag_count"],
-        ),
-        dict(
-            range=[0, max(1, n_clusters - 1)],
-            tickvals=list(range(n_clusters)),
-            ticktext=[f"C{i+1}" for i in range(n_clusters)],
-            label="Cluster ID",
-            values=plot_df["cluster_id"],
-        ),
+        dict(label="Views", values=plot_df["log_views"],
+             range=[low, high] if low != high else [low - 0.5, high + 0.5],
+             tickvals=ticks, ticktext=[format_views(t) for t in ticks]),
+        dict(label="Engagement (%)", values=plot_df["engagement_rate"].clip(upper=engagement_cap),
+             range=[0, engagement_cap]),
+        dict(label="Trend Record Age (d)", values=plot_df["days_to_trend"],
+             range=[0, max(1, float(plot_df["days_to_trend"].max()))]),
+        dict(label="Title Length", values=plot_df["title_length"],
+             range=[0, max(1, float(plot_df["title_length"].max()))]),
+        dict(label="Uppercase (%)", values=plot_df["upper_ratio"], range=[0, 100]),
+        dict(label="Tag Count", values=plot_df["tag_count"],
+             range=[0, max(1, float(plot_df["tag_count"].max()))]),
+        dict(label="Cluster", values=plot_df["cluster_id"],
+             range=[0, max(1, n_clusters - 1)],
+             tickvals=list(range(n_clusters)),
+             ticktext=[f"C{i + 1}" for i in range(n_clusters)]),
     ]
 
-    fig = go.Figure(
-        data=go.Parcoords(
-            line=dict(
-                color=plot_df["cluster_id"],
-                colorscale=colorscale,
-                showscale=True,
-                cmin=-0.25,
-                cmax=max(1, n_clusters - 1) + 0.25,
-                colorbar=dict(
-                    title=dict(text="Cluster", font=dict(size=11)),
-                    tickvals=list(range(n_clusters)),
-                    ticktext=[f"C{i+1}" for i in range(n_clusters)],
-                    thickness=14,
-                    len=0.72,
-                    y=0.46,
-                ),
-            ),
-            dimensions=dimensions,
-            labelfont=dict(size=12, color="#f8fafc", family="sans-serif"),
-            tickfont=dict(size=10, color="#cbd5e1", family="sans-serif"),
-            # Hide redundant range bounds so they never collide with top/bottom ticks
-            rangefont=dict(size=1, color="rgba(0,0,0,0)"),
-        )
-    )
+    fig = go.Figure(go.Parcoords(
+        line=dict(color=plot_df["cluster_id"], colorscale=colorscale,
+                  showscale=False, cmin=-0.5, cmax=n_clusters - 0.5),
+        dimensions=dimensions,
+        domain=dict(x=[0.04, 0.98], y=[0.055, 0.66]),
+        labelfont=dict(size=13, color="#f8fafc"),
+        tickfont=dict(size=11, color="#cbd5e1"),
+        rangefont=dict(size=1, color="rgba(0,0,0,0)"),
+    ))
 
+    # The legend is ABOVE the axes in its own reserved area.
+    # It does not compete with axis titles or take extra space below the chart.
+    # Two columns keep long cluster names readable on desktop.
+    for cid in range(n_clusters):
+        row, col = divmod(cid, 2)
+        fig.add_annotation(
+            x=0.025 + 0.50 * col, y=0.905 - 0.08 * row,
+            xref="paper", yref="paper", showarrow=False,
+            text=f"● {archetype_map[cid]}",
+            xanchor="left", yanchor="middle", align="left",
+            font=dict(size=13, color=colors[cid]),
+        )
+
+    rows = (n_clusters + 1) // 2
+    # Preserve a gap between the bottom legend row and axis labels,
+    # including the optional fifth and sixth clusters.
+    if rows > 2:
+        fig.data[0].domain.y = [0.055, 0.66 - (rows - 2) * 0.08]
     fig.update_layout(
-        title=dict(
-            text="Multi-Dimensional Behavioral Cluster Signatures (Interactive Parallel Coordinates)",
-            font=dict(size=15),
-            y=0.96,
-            x=0,
-            xanchor="left",
-        ),
-        height=460,
-        margin=dict(l=55, r=65, t=95, b=30),
+        title=dict(text="Video Cluster Profiles", font=dict(size=17), x=0.01, y=0.995,
+                   xanchor="left", yanchor="top"),
+        height=550 + 24 * max(0, rows - 2),
+        margin=dict(l=65, r=25, t=65, b=35),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="sans-serif", size=12, color="#e2e8f0"),
+        font=dict(size=12, color="#e2e8f0"),
     )
-
     return fig
 
 
@@ -564,19 +561,19 @@ def draw_pca_3d_clusters(kmeans_res: dict, max_samples: int = 2200):
             bgcolor="rgba(0,0,0,0)",
             camera=dict(eye=dict(x=1.55, y=1.55, z=1.2)),
             xaxis=dict(
-                title=f"PC1 ({var_ratios[0]:.1f}% Var)",
+                title=f"PC1 ({var_ratios[0]:.1f}%)",
                 backgroundcolor="rgba(15, 23, 42, 0.45)",
                 gridcolor="#334155",
                 showbackground=True,
             ),
             yaxis=dict(
-                title=f"PC2 ({var_ratios[1]:.1f}% Var)",
+                title=f"PC2 ({var_ratios[1]:.1f}%)",
                 backgroundcolor="rgba(15, 23, 42, 0.45)",
                 gridcolor="#334155",
                 showbackground=True,
             ),
             zaxis=dict(
-                title=f"PC3 ({var_ratios[2]:.1f}% Var)",
+                title=f"PC3 ({var_ratios[2]:.1f}%)",
                 backgroundcolor="rgba(15, 23, 42, 0.45)",
                 gridcolor="#334155",
                 showbackground=True,
@@ -596,6 +593,8 @@ def draw_rf_decision_surface(
     x_feat: str = "tag_count",
     y_feat: str = "title_length",
     view_mode: str = "surface",
+    country_code: str | None = None,
+    category: str | None = None,
 ):
     """
     Draws either:
@@ -630,16 +629,16 @@ def draw_rf_decision_surface(
         )
         fig.update_layout(
             title=dict(
-                text=f"Random Forest Feature Importance (ROC-AUC: {rf_res['roc_auc']:.3f})",
+                text="Feature Importance",
                 font=dict(size=14),
-                y=0.96,
+                y=0.89,
                 x=0,
                 xanchor="left",
             ),
-            xaxis_title="Relative Predictive Importance (%)",
+            xaxis_title="Importance (%)",
             yaxis_title="",
             height=520,
-            margin=dict(l=10, r=15, t=65, b=20),
+            margin=dict(l=10, r=15, t=85, b=20),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(family="sans-serif", size=12),
@@ -649,11 +648,33 @@ def draw_rf_decision_surface(
     rf_clf = rf_res["rf_clf"]
     ml_df = rf_res["ml_df"]
     X_cols = rf_res["X_columns"]
-    X_medians = rf_res["X_medians"]
+    # The decision surface uses valid category/country flags and a real video baseline.
     median_eng = rf_res["median_eng"]
 
-    x_min, x_max = np.percentile(ml_df[x_feat], [1, 99])
-    y_min, y_max = np.percentile(ml_df[y_feat], [1, 99])
+    countries = sorted(ml_df["country_code"].dropna().unique().tolist())
+    if not countries:
+        raise ValueError("No countries available for the Random Forest surface.")
+    country_code = country_code or countries[0]
+
+    country_rows = ml_df[ml_df["country_code"] == country_code]
+    if country_rows.empty:
+        raise ValueError(f"No data available for country: {country_code}")
+
+    category = category or country_rows["category"].mode().iloc[0]
+    matching_rows = country_rows[country_rows["category"] == category]
+    if matching_rows.empty:
+        raise ValueError(f"No videos for {country_code} / {category}")
+
+    # Choose a real reference video close to typical metadata values.
+    numeric_cols = list(RF_CONTINUOUS_FEATURES.keys())
+    numeric_values = matching_rows[numeric_cols].astype(float)
+    medians = numeric_values.median()
+    scales = (numeric_values.quantile(0.75) - numeric_values.quantile(0.25)).replace(0, 1)
+    distances = (((numeric_values - medians) / scales) ** 2).sum(axis=1)
+    reference_video = matching_rows.iloc[int(np.argmin(distances.to_numpy()))]
+
+    x_min, x_max = np.percentile(matching_rows[x_feat], [1, 99])
+    y_min, y_max = np.percentile(matching_rows[y_feat], [1, 99])
     if x_min == x_max:
         x_max = x_min + 1.0
     if y_min == y_max:
@@ -663,14 +684,23 @@ def draw_rf_decision_surface(
     y_grid = np.linspace(y_min, y_max, 42)
     xx, yy = np.meshgrid(x_grid, y_grid)
 
-    grid_df = pd.DataFrame({col: X_medians[col] for col in X_cols}, index=range(xx.size))
+    # One-hot columns must describe exactly one real country and one category.
+    reference_features = {col: 0.0 for col in X_cols}
+    for feat in numeric_cols:
+        reference_features[feat] = float(reference_video[feat])
+
+    reference_features[f"market_{country_code}"] = 1
+    reference_features[f"category_{category}"] = 1
+
+    grid_df = pd.DataFrame([reference_features] * xx.size, columns=X_cols)
     grid_df[x_feat] = xx.ravel()
     grid_df[y_feat] = yy.ravel()
 
     z_prob = rf_clf.predict_proba(grid_df[X_cols])[:, 1].reshape(xx.shape) * 100.0
 
-    sample_n = min(450, len(ml_df))
-    sample_df = ml_df.sample(n=sample_n, random_state=42).copy()
+    # Overlay observed videos from the same country and category only.
+    sample_n = min(140, len(matching_rows))
+    sample_df = matching_rows.sample(n=sample_n, random_state=42).copy()
     sample_df = sample_df[
         (sample_df[x_feat].between(x_min, x_max))
         & (sample_df[y_feat].between(y_min, y_max))
@@ -699,7 +729,7 @@ def draw_rf_decision_surface(
                 labelfont=dict(size=10, color="#ffffff"),
             ),
             colorbar=dict(
-                title=dict(text="Viral Prob (%)", font=dict(size=11)),
+                title=dict(text="High Engagement (%)", font=dict(size=11)),
                 thickness=14,
                 len=0.78,
             ),
@@ -745,7 +775,7 @@ def draw_rf_decision_surface(
 
     fig.update_layout(
         title=dict(
-            text=f"RF Virality Response Surface ({x_label} vs. {y_label})",
+            text=f"RF High-Engagement Probability: {country_code} / {category}",
             font=dict(size=14),
             y=0.97,
             x=0,
