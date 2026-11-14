@@ -74,6 +74,11 @@ def get_cached_adv_figs(
     )
     return fig_map, geo_stats, fig_sankey, sankey_stats, fig_network, net_stats
 
+@st.cache_resource(show_spinner="Training ML Models in background...")
+def get_cached_ml_pipelines(data, k_clusters):
+    k_res = run_kmeans_pca_pipeline(data, n_clusters=k_clusters)
+    rf_res = run_random_forest_pipeline(data)
+    return k_res, rf_res
 
 # --- SIDEBAR CONTROLS (3 Distinct Interactive Control Types) ---
 st.sidebar.header("Dashboard Filters")
@@ -224,8 +229,10 @@ else:
                 )
 
             # Run cached ML pipelines
-            kmeans_res = run_kmeans_pca_pipeline(filtered_df, n_clusters=n_clusters)
-            rf_res = run_random_forest_pipeline(filtered_df)
+            #kmeans_res = run_kmeans_pca_pipeline(filtered_df, n_clusters=n_clusters)
+            #rf_res = run_random_forest_pipeline(filtered_df)
+
+            kmeans_res, rf_res = get_cached_ml_pipelines(filtered_df, n_clusters)
 
             # --- ML MODEL EVALUATION KPI ROW ---
             m_col1, m_col2, m_col3, m_col4 = st.columns(4)
