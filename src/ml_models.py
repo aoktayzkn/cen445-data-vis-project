@@ -7,7 +7,7 @@ Visualizations:
   1) Interactive Multi-Dimensional Parallel Coordinates Plot (go.Parcoords)
   2) 3D PCA Behavioral Cluster Manifold with Centroids (px.scatter_3d + go.Scatter3d)
   3) Random Forest 2D Non-Linear Decision Surface Contour Map (go.Contour + go.Scatter)
-     with interactive toggle for Gini Feature Importance & Tree Variance
+     with interactive toggle for (permutation) Feature Importance
 """
 
 import numpy as np
@@ -75,30 +75,32 @@ def engineer_ml_features(df: pd.DataFrame) -> pd.DataFrame:
 # 2) UNSUPERVISED ML: K-MEANS CLUSTERING + 3D PCA
 # ---------------------------------------------------------------------------
 def _assign_archetype_names(summary_df: pd.DataFrame) -> dict:
-    """Assign short, descriptive names using the strongest measured cluster features.
-
-    The labels are descriptive, not causal. When k changes, names are recalculated.
-    """
+    """Simple, short group names based on what really separates the groups:
+    views and engagement. Names are descriptive only and are recalculated when k changes."""
     names = {}
     remaining = set(summary_df.index)
 
-    # Use distinct clusters for the main four measurable characteristics.
-    rules = [
-        ("log_views", "High Views"),
-        ("engagement_rate", "High Engagement"),
-        ("upper_ratio", "Uppercase Titles"),
-        ("title_length", "Long Titles"),
-    ]
-    for feature, label in rules:
+    def pick(feature, label, highest=True):
         if not remaining:
-            break
-        cluster_id = summary_df.loc[sorted(remaining), feature].idxmax()
+            return
+        col = summary_df.loc[sorted(remaining), feature]
+        cluster_id = col.idxmax() if highest else col.idxmin()
         names[cluster_id] = label
         remaining.remove(cluster_id)
 
-    # Extra clusters with k=5 or 6 do not receive unsupported claims.
-    for cluster_id in sorted(remaining):
-        names[cluster_id] = "Other Videos"
+    pick("log_views", "High Views")
+    pick("engagement_rate", "High Engagement")
+    pick("engagement_rate", "Low Engagement", highest=False)
+
+    # Any extra groups (k = 4, 5, 6) sit in the middle, ordered by engagement.
+    extra = sorted(remaining, key=lambda c: summary_df.loc[c, "engagement_rate"])
+    middle_labels = {
+        1: ["Medium Engagement"],
+        2: ["Medium-Low Engagement", "Medium-High Engagement"],
+        3: ["Medium-Low Engagement", "Medium Engagement", "Medium-High Engagement"],
+    }.get(len(extra), [f"Medium Engagement {i + 1}" for i in range(len(extra))])
+    for cluster_id, label in zip(extra, middle_labels):
+        names[cluster_id] = label
 
     return {
         int(cluster_id): f"C{int(cluster_id) + 1}: {label}"
@@ -141,17 +143,6 @@ def run_kmeans_pca_pipeline(df: pd.DataFrame, n_clusters: int = 4):
 
     centroids_pca = pca.transform(kmeans.cluster_centers_)
     var_ratios = pca.explained_variance_ratio_ * 100.0
-
-
-    # PCA feature contributions
-    pca_loadings = pd.DataFrame(
-        pca.components_.T,
-        index=feature_cols,
-        columns=["PC1", "PC2", "PC3"]
-    )
-
-    print("\n--- PCA FEATURE LOADINGS ---")
-    print(pca_loadings.round(3))
 
 
     centroid_summary = ml_df.groupby("cluster_id")[feature_cols].mean()
@@ -201,7 +192,7 @@ RF_CONTINUOUS_FEATURES = {
 def run_random_forest_pipeline(df: pd.DataFrame):
     """
     Trains Random Forest models using pre-publication metadata and velocity features
-    to predict High-Engagement Virality (Classification) and Engagement Rate (Regression).
+    to predict High Engagement (Classification) and Engagement Rate (Regression).
     """
     ml_df = engineer_ml_features(df)
 
@@ -236,20 +227,6 @@ def run_random_forest_pipeline(df: pd.DataFrame):
 
 
 
-    feature_display_names = {
-        **RF_CONTINUOUS_FEATURES,
-        **{
-            col: f"Category: {col.removeprefix('category_')}"
-            for col in category_dummies.columns
-        },
-        **{
-            col: f"Market: {col.removeprefix('market_')}"
-            for col in country_dummies.columns
-        },
-    }
-
-
-
     # Split data by video ID to prevent data leakage
     splitter = GroupShuffleSplit(
         n_splits=1,
@@ -278,18 +255,10 @@ def run_random_forest_pipeline(df: pd.DataFrame):
     y_reg_test = y_reg[test_idx]
 
 
-    # Check if video IDs overlap between train and test
+    # Safety check: the same video must never be in both train and test.
     train_ids = set(ml_df["video_id"].iloc[train_idx])
     test_ids = set(ml_df["video_id"].iloc[test_idx])
-
-    common_ids = train_ids.intersection(test_ids)
-
-    print("Shared Video IDs:", len(common_ids))
-    print("Training Rows:", len(X_train))
-    print("Test Rows:", len(X_test))
-
-    assert len(common_ids) == 0, "Data leakage detected!"
-
+    assert len(train_ids & test_ids) == 0, "Data leakage detected!"
 
     rf_clf = RandomForestClassifier(
         n_estimators=120,
@@ -316,17 +285,33 @@ def run_random_forest_pipeline(df: pd.DataFrame):
     rf_reg.fit(X_train, y_reg_train)
     reg_r2 = float(r2_score(y_reg_test, rf_reg.predict(X_test)))
 
-    importances = rf_clf.feature_importances_
-    tree_std = np.std(
-        [tree.feature_importances_ for tree in rf_clf.estimators_], axis=0
-    )
+    # Permutation importance on the TEST set: shuffle one feature (or one whole
+    # group such as "Category") and measure how much the AUC drops.
+    groups = {
+        RF_CONTINUOUS_FEATURES["tag_count"]: ["tag_count"],
+        RF_CONTINUOUS_FEATURES["title_length"]: ["title_length"],
+        RF_CONTINUOUS_FEATURES["upper_ratio"]: ["upper_ratio"],
+        RF_CONTINUOUS_FEATURES["publish_hour"]: ["publish_hour"],
+        "Category": list(category_dummies.columns),
+        "Market (Country)": list(country_dummies.columns),
+    }
+    rng = np.random.default_rng(42)
+    drops = {}
+    for name, cols in groups.items():
+        scores = []
+        for _ in range(5):
+            X_perm = X_test.copy()
+            X_perm[cols] = X_perm[cols].to_numpy()[rng.permutation(len(X_perm))]
+            auc_perm = roc_auc_score(y_clf_test, rf_clf.predict_proba(X_perm)[:, 1])
+            scores.append(clf_auc - auc_perm)
+        drops[name] = max(float(np.mean(scores)), 0.0)
+    total_drop = sum(drops.values()) or 1.0
 
     imp_df = pd.DataFrame(
         {
-            "feature": X_df.columns,
-            "display_name": [feature_display_names.get(c, c) for c in X_df.columns],
-            "importance": importances * 100.0,
-            "std": tree_std * 100.0,
+            "feature": list(drops.keys()),
+            "display_name": list(drops.keys()),
+            "importance": [100.0 * v / total_drop for v in drops.values()],
         }
     ).sort_values("importance", ascending=True)
 
@@ -390,14 +375,14 @@ def draw_parallel_coordinates(kmeans_res: dict, max_samples: int = 220):
              tickvals=ticks, ticktext=[format_views(t) for t in ticks]),
         dict(label="Engagement (%)", values=plot_df["engagement_rate"].clip(upper=engagement_cap),
              range=[0, engagement_cap]),
-        dict(label="Trend Record Age (d)", values=plot_df["days_to_trend"],
+        dict(label="Days to Trend", values=plot_df["days_to_trend"],
              range=[0, max(1, float(plot_df["days_to_trend"].max()))]),
         dict(label="Title Length", values=plot_df["title_length"],
              range=[0, max(1, float(plot_df["title_length"].max()))]),
         dict(label="Uppercase (%)", values=plot_df["upper_ratio"], range=[0, 100]),
         dict(label="Tag Count", values=plot_df["tag_count"],
              range=[0, max(1, float(plot_df["tag_count"].max()))]),
-        dict(label="Cluster", values=plot_df["cluster_id"],
+        dict(label="Group", values=plot_df["cluster_id"],
              range=[0, max(1, n_clusters - 1)],
              tickvals=list(range(n_clusters)),
              ticktext=[f"C{i + 1}" for i in range(n_clusters)]),
@@ -432,7 +417,7 @@ def draw_parallel_coordinates(kmeans_res: dict, max_samples: int = 220):
     if rows > 2:
         fig.data[0].domain.y = [0.055, 0.66 - (rows - 2) * 0.08]
     fig.update_layout(
-        title=dict(text="Video Cluster Profiles", font=dict(size=17), x=0.01, y=0.995,
+        title=dict(text="Video Group Profiles", font=dict(size=17), x=0.01, y=0.995,
                    xanchor="left", yanchor="top"),
         height=550 + 24 * max(0, rows - 2),
         margin=dict(l=65, r=25, t=65, b=35),
@@ -512,7 +497,7 @@ def draw_pca_3d_clusters(kmeans_res: dict, max_samples: int = 2200):
             y=centroids_df["PC2"],
             z=centroids_df["PC3"],
             mode="markers+text",
-            name="Cluster Centroids",
+            name="Group Centers",
             text=[f"C{i+1}" for i in centroids_df["cluster_id"]],
             textposition="top center",
             textfont=dict(size=11, color="#ffffff"),
@@ -520,8 +505,8 @@ def draw_pca_3d_clusters(kmeans_res: dict, max_samples: int = 2200):
                 ["archetype", "video_count", "avg_views", "avg_engagement"]
             ].values,
             hovertemplate=(
-                "<b>🎯 %{customdata[0]} (Centroid)</b><br>"
-                "Videos in Cluster: %{customdata[1]:,}<br>"
+                "<b>%{customdata[0]} (Group Center)</b><br>"
+                "Videos in Group: %{customdata[1]:,}<br>"
                 "Avg Views: %{customdata[2]:,.0f}<br>"
                 "Avg Engagement: %{customdata[3]:.2f}%<extra></extra>"
             ),
@@ -537,7 +522,7 @@ def draw_pca_3d_clusters(kmeans_res: dict, max_samples: int = 2200):
 
     fig.update_layout(
         title=dict(
-            text=f"3D PCA Cluster Manifold ({kmeans_res['total_var']:.1f}% Total Variance Captured)",
+            text=f"3D View of Video Groups ({kmeans_res['total_var']:.1f}% of Info Kept)",
             font=dict(size=14),
             y=0.97,
             x=0,
@@ -599,7 +584,7 @@ def draw_rf_decision_surface(
     """
     Draws either:
       - 'surface': 2D Non-Linear Random Forest Probability Response Surface (go.Contour)
-      - 'importance': Non-Linear Gini Feature Importance with Tree Variance error bars.
+      - 'importance': Permutation feature importance (shuffle a feature, measure the AUC drop).
     """
     if view_mode == "importance":
         imp_df = rf_res["importance_df"].tail(10)
@@ -608,23 +593,12 @@ def draw_rf_decision_surface(
                 x=imp_df["importance"],
                 y=imp_df["display_name"],
                 orientation="h",
-                error_x=dict(
-                    type="data",
-                    array=imp_df["std"],
-                    color="#94a3b8",
-                    thickness=1.2,
-                    width=4,
-                ),
                 marker=dict(
                     color=imp_df["importance"],
                     colorscale="YlOrRd",
                     line=dict(color="#1e293b", width=1),
                 ),
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Gini Importance: %{x:.2f}%<br>"
-                    "Tree Std Dev: ±%{error_x.array:.2f}%<extra></extra>"
-                ),
+                hovertemplate="<b>%{y}</b><br>Importance: %{x:.1f}%<extra></extra>",
             )
         )
         fig.update_layout(
@@ -729,14 +703,14 @@ def draw_rf_decision_surface(
                 labelfont=dict(size=10, color="#ffffff"),
             ),
             colorbar=dict(
-                title=dict(text="High Engagement (%)", font=dict(size=11)),
+                title=dict(text="Chance of High Engagement (%)", font=dict(size=11)),
                 thickness=14,
                 len=0.78,
             ),
             hovertemplate=(
                 f"{x_label}: %{{x:.1f}}<br>"
                 f"{y_label}: %{{y:.1f}}<br>"
-                "<b>RF Predicted High-Engagement Prob: %{z:.1f}%</b><extra></extra>"
+                "<b>Chance of High Engagement: %{z:.1f}%</b><extra></extra>"
             ),
         )
     )
@@ -775,7 +749,7 @@ def draw_rf_decision_surface(
 
     fig.update_layout(
         title=dict(
-            text=f"RF High-Engagement Probability: {country_code} / {category}",
+            text=f"Chance of High Engagement: {country_code} / {category}",
             font=dict(size=14),
             y=0.97,
             x=0,

@@ -148,7 +148,7 @@ else:
 
     # --- TAB 2: MEMBER 2 ML (1 Top + 2 Bottom Grid + Interactive ML Controls) ---
     elif active_tab == tab_options[1]:
-        st.subheader("Behavioral Clustering (K-Means + PCA) & Non-Linear Virality Prediction (Random Forest)")
+        st.subheader("Video Groups (K-Means) & Engagement Prediction (Random Forest)")
 
         if len(filtered_df) < 40:
             st.warning(
@@ -158,15 +158,15 @@ else:
             ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([1.2, 1.3, 1.3, 1.4])
             with ctrl_col1:
                 n_clusters = st.slider(
-                    "K-Means Clusters (k)",
+                    "Number of Video Groups (k)",
                     min_value=2,
                     max_value=6,
                     value=4,
-                    help="Adjust the number of behavioral video archetypes discovered by K-Means.",
+                    help="K-Means splits videos into this many groups of similar videos.",
                 )
             with ctrl_col2:
                 rf_x_feat = st.selectbox(
-                    "RF Surface X-Axis",
+                    "Map X-Axis",
                     options=list(RF_CONTINUOUS_FEATURES.keys()),
                     index=0,
                     format_func=lambda k: RF_CONTINUOUS_FEATURES[k],
@@ -174,60 +174,88 @@ else:
             with ctrl_col3:
                 rf_y_options = [k for k in RF_CONTINUOUS_FEATURES.keys() if k != rf_x_feat]
                 rf_y_feat = st.selectbox(
-                    "RF Surface Y-Axis",
+                    "Map Y-Axis",
                     options=rf_y_options,
                     index=0,
                     format_func=lambda k: RF_CONTINUOUS_FEATURES[k],
                 )
             with ctrl_col4:
                 rf_view_mode = st.radio(
-                    "Random Forest Diagnostic Mode",
+                    "Random Forest View",
                     options=["surface", "importance"],
-                    format_func=lambda m: "2D Decision Surface" if m == "surface" else "Feature Importance",
+                    format_func=lambda m: "Probability Map" if m == "surface" else "Feature Importance",
                     horizontal=True,
                 )
 
             # Run cached ML pipelines
-            kmeans_res = run_kmeans_pca_pipeline(filtered_df, n_clusters=n_clusters)
-            rf_res = run_random_forest_pipeline(filtered_df)
+            # Models learn from the full dataset so groups stay stable;
+            # the sidebar filters only change which videos are shown.
+            kmeans_full = run_kmeans_pca_pipeline(df, n_clusters=n_clusters)
+            kmeans_res = {**kmeans_full, "df": kmeans_full["df"].loc[filtered_df.index]}
+            rf_res = run_random_forest_pipeline(df)
 
             # --- ML MODEL EVALUATION KPI ROW ---
             m_col1, m_col2, m_col3, m_col4 = st.columns(4)
             m_col1.metric(
-                "K-Means Silhouette Score",
-                f"{kmeans_res['silhouette']:.3f}",
-                help="Measures cluster cohesion and separation in 7D standardized space.",
+                "Group Separation (Silhouette)",
+                f"{kmeans_res['silhouette']:.2f}",
+                help="Scale from -1 to 1. Around 0.2 means the groups partly overlap.",
             )
             m_col2.metric(
-                "3D PCA Variance Captured",
+                "Info Kept in 3D View",
                 f"{kmeans_res['total_var']:.1f}%",
-                help="Percentage of total 7-dimensional behavioral variance retained in 3D projection.",
+                help="How much of the original 7 features is kept when shown in 3 dimensions (PCA).",
             )
             m_col3.metric(
-                "RF Classifier ROC-AUC",
-                f"{rf_res['roc_auc']:.3f}",
-                f"Acc: {rf_res['accuracy'] * 100:.1f}%",
-                help="Out-of-sample test ROC-AUC and Accuracy for predicting High-Engagement Virality.",
+                "Prediction Score (AUC)",
+                f"{rf_res['roc_auc']:.2f}",
+                help=f"0.50 = random guessing, 1.00 = perfect. Test accuracy: {rf_res['accuracy'] * 100:.0f}%.",
             )
             m_col4.metric(
-                "RF Regressor R² (Engagement)",
-                f"{rf_res['reg_r2']:.3f}",
-                f"Median Thr: {rf_res['median_eng']:.2f}%",
-                help="Out-of-sample variance explained by Random Forest Regressor using the selected video metadata features.",
+                "Engagement Fit (R²)",
+                f"{rf_res['reg_r2']:.2f}",
+                help="0 = explains nothing, 1 = explains everything. A low value means engagement is hard to predict from these features.",
             )
 
             # --- CHART 1 (TOP FULL-WIDTH): PARALLEL COORDINATES ---
             fig_parcoords = draw_parallel_coordinates(kmeans_res)
             st.plotly_chart(fig_parcoords, width="stretch")
             with st.expander("📌 Video Group Insights"):
+                view_df = kmeans_res["df"]
+                grp = view_df.groupby("archetype").agg(
+                    videos=("views", "size"),
+                    median_views=("views", "median"),
+                    median_eng=("engagement_rate", "median"),
+                    median_days=("days_to_trend", "median"),
+                )
+                hv = [n for n in grp.index if "High Views" in n]
+                he = [n for n in grp.index if "High Engagement" in n]
+                facts = []
+                if hv:
+                    facts.append(
+                        f"**{hv[0].split(': ')[1]}** videos reach about {grp.loc[hv[0], 'median_views'] / 1e6:.1f}M views "
+                        f"and take about {grp.loc[hv[0], 'median_days']:.0f} days to trend."
+                    )
+                if he:
+                    facts.append(
+                        f"**{he[0].split(': ')[1]}** videos get about {grp.loc[he[0], 'median_eng']:.0f}% likes + comments per view."
+                    )
                 st.markdown(
-                    """
-**What it shows:** K-Means groups videos with similar features.
-
-**Key insight:** Groups differ in views, engagement, and title style.
-
-**How to use:** Select a range on an axis to explore the groups.
-                    """
+                    "**What it shows:** Each line is one video. Colors are K-Means groups of similar videos.\n\n"
+                    f"**Key insight:** {' '.join(facts) if facts else 'Groups differ in views and engagement.'}\n\n"
+                    "**How to use:** Drag on an axis to select a range."
+                )
+                st.dataframe(
+                    grp.reset_index().rename(columns={
+                        "archetype": "Group", "videos": "Videos", "median_views": "Median Views",
+                        "median_eng": "Median Engagement (%)", "median_days": "Median Days to Trend",
+                    }).style.format({
+                        "Videos": "{:,.0f}", "Median Views": "{:,.0f}",
+                        "Median Engagement (%)": "{:.1f}", "Median Days to Trend": "{:.0f}",
+                    }),
+                    hide_index=True,
+                    column_config={"Group": st.column_config.TextColumn("Group", width="large")},
+                    width="stretch",
                 )
 
             st.divider()
@@ -239,7 +267,7 @@ else:
             col_left, col_right = st.columns(2, gap="large")
 
             with col_left:
-                pca_title = f"3D PCA Clusters ({kmeans_res['total_var']:.1f}% Variance Explained)"
+                pca_title = f"3D View of Video Groups ({kmeans_res['total_var']:.1f}% of Info Kept)"
                 st.markdown(
                     f'<div style="font-size:22px;font-weight:700;line-height:1.3;'
                     f'padding-top:2px;">{pca_title}</div>',
@@ -288,7 +316,7 @@ else:
                     category=rf_category,
                 )
                 if rf_view_mode == "surface":
-                    fig_rf.update_layout(title=dict(text="RF High-Engagement Probability"))
+                    fig_rf.update_layout(title=dict(text="Chance of High Engagement"))
                 fig_rf.update_layout(height=520)
                 st.plotly_chart(fig_rf, width="stretch")
 
@@ -304,11 +332,11 @@ else:
                 with st.expander("📌 3D PCA Insights"):
                     st.markdown(
                         f"""
-**What it shows:** PCA displays video groups in 3D.
+**What it shows:** Each dot is a video. Closer dots are more similar.
 
-**Key insight:** The three axes explain **{kmeans_res['total_var']:.1f}%** of the data's variation.
+**Key insight:** 3 axes keep **{kmeans_res['total_var']:.1f}%** of the information. Groups overlap, so borders are soft.
 
-**How to use:** Rotate the chart or hover over points. White diamonds show group centers.
+**How to use:** Rotate, zoom, or hover. White diamonds are group centers.
                         """
                     )
 
@@ -316,11 +344,11 @@ else:
                 with st.expander("📌 Random Forest Insights"):
                     st.markdown(
                         f"""
-**What it shows:** Random Forest estimates high engagement from video features.
+**What it shows:** The chance that a video gets high engagement (above {rf_res['median_eng']:.2f}% likes + comments per view).
 
-**Key insight:** Its test ROC-AUC is **{rf_res['roc_auc']:.3f}**. It predicts above-median engagement (**{rf_res['median_eng']:.2f}%**), not whether a video becomes trending.
+**Key insight:** Score (AUC) is **{rf_res['roc_auc']:.2f}**: better than guessing (0.50), but far from perfect. It does not predict who will trend.
 
-**How to use:** Select features, country, and category to explore predictions. Feature Importance shows which inputs the model uses most.
+**How to use:** Pick two features, a country, and a category. Other features stay at typical values. Switch to Feature Importance to see what matters most.
                         """
                     )
 
