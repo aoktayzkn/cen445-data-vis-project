@@ -6,12 +6,12 @@ An interactive, multi-module data visualization and machine learning web applica
 
 ## 👥 Team Members & Module Ownership
 
-The dashboard is architected around a unified **1 Top + 2 Bottom symmetric grid layout** with persistent sidebar filtering, `@st.cache_data` high-speed state caching, KPI summary cards, and expandable technical documentation (`st.expander`).
+The dashboard is architected around a unified **1 Top + 2 Bottom symmetric grid layout** with persistent sidebar filtering, `@st.cache_data` and `@st.cache_resource` high-speed state caching, KPI summary cards, and expandable technical documentation (`st.expander`).
 
 | Module / Tab | Team Member | Core Responsibilities & Visuals |
 | :--- | :--- | :--- |
 | **1. Exploratory Data Analysis (EDA)** | **Fatih AKSÜT** | Multi-country dataset ingestion, 99th-percentile outlier filtering, category JSON mapping, Distribution Histogram with Marginal Boxplots, Pearson Correlation Matrix, and Category-to-Channel Hierarchical Treemap (`uye1_veri_isleme.py`, `veri_hazirla.py`). |
-| **2. Machine Learning Models** | **Yusuf YALÇIN** | Unsupervised behavioral segmentation (**K-Means Clustering + 3D PCA Manifold**), Multi-Dimensional Parallel Coordinates with interactive brushing, and supervised non-linear virality prediction (**Random Forest Classifier & Regressor** with 2D response surfaces and feature importance diagnostics) (`src/ml_models.py`). |
+| **2. Machine Learning Models** | **Yusuf YALÇIN** | Unsupervised behavioral segmentation (**K-Means Clustering + 3D PCA Manifold**), Multi-Dimensional Parallel Coordinates with interactive brushing, and supervised non-linear virality prediction (**Random Forest Classifier & Regressor** with 2D response surfaces and feature importance diagnostics). Includes global `@st.cache_resource` implementation for real-time model evaluation (`src/ml_models.py`). |
 | **3. Dashboard Architecture & Advanced Visualizations** | **Ali Oktay ÖZKAN** | Core Streamlit layout orchestration, sidebar filter pipeline, `@st.cache_data` optimization, Multi-Metric Northern-Hemisphere Choropleth Map, Velocity-to-Engagement Sankey Flow Diagram, and Graph-Theoretic Tag Co-occurrence Network with Degree & Betweenness Centrality diagnostics (`app.py`, `src/visualizations.py`). |
 
 ---
